@@ -2,13 +2,6 @@ const admin = require('firebase-admin');
 const cron  = require('node-cron');
 const http  = require('http');
 
-// ── HTTP server (required for Render free Web Service) ──
-const PORT = process.env.PORT || 3000;
-http.createServer((req, res) => {
-  res.writeHead(200);
-  res.end('Daily Tracker Notification Server running ✅');
-}).listen(PORT, () => console.log(`HTTP server on port ${PORT}`));
-
 // ── Firebase init ──
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
 admin.initializeApp({
@@ -19,23 +12,36 @@ const db  = admin.firestore();
 const msg = admin.messaging();
 console.log('✅ Daily Tracker notification server started');
 
+// ── HTTP server (required for Render free tier + test endpoint) ──
+const PORT = process.env.PORT || 3000;
+http.createServer(async (req, res) => {
+  // Test endpoint: GET /test
+  if (req.url === '/test') {
+    console.log('Manual test triggered via /test endpoint');
+    await checkAndNotify(true); // true = force send regardless of time
+    res.writeHead(200, {'Content-Type':'text/plain'});
+    res.end('Test triggered! Check Render logs and your device.');
+    return;
+  }
+  res.writeHead(200, {'Content-Type':'text/plain'});
+  res.end('Daily Tracker Notification Server ✅ running');
+}).listen(PORT, () => console.log(`HTTP server on port ${PORT}`));
+
 // ── Helpers ──
 function today() { return new Date().toISOString().slice(0, 10); }
 function minsUntil(ds) {
   if (!ds) return null;
-  const due = new Date(ds.includes('T') ? ds : ds + 'T23:59:00');
-  return Math.floor((due - new Date()) / 60000);
+  return Math.floor((new Date(ds.includes('T')?ds:ds+'T23:59:00') - new Date()) / 60000);
 }
 function daysUntil(ds) {
   if (!ds) return null;
-  const due = new Date(ds.includes('T') ? ds : ds + 'T23:59:00');
-  return Math.floor((due - new Date()) / (1000 * 60 * 60 * 24));
+  return Math.floor((new Date(ds.includes('T')?ds:ds+'T23:59:00') - new Date()) / 86400000);
 }
 function fmt(ds) {
-  return new Date(ds).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return new Date(ds).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
 }
 
-// ── Send FCM to all tokens of a user ──
+// ── Send FCM ──
 async function sendToUser(tokens, title, body, tag) {
   if (!tokens || tokens.length === 0) return;
   for (const token of tokens) {
@@ -44,46 +50,53 @@ async function sendToUser(tokens, title, body, tag) {
         token,
         notification: { title, body },
         webpush: {
-          notification: {
-            title, body,
+          notification: { title, body,
             icon: 'https://mellow-dodol-c4c062.netlify.app/favicon.ico',
             tag, renotify: true, vibrate: [200, 100, 200]
           },
           fcmOptions: { link: 'https://mellow-dodol-c4c062.netlify.app/' }
         }
       });
-      console.log(`📨 Sent "${title}" → ...${token.slice(-6)}`);
+      console.log(`📨 Sent "${title}" → ...${token.slice(-8)}`);
     } catch (e) {
-      if (e.code === 'messaging/registration-token-not-registered') {
-        console.log(`🗑 Stale token removed ...${token.slice(-6)}`);
-      } else {
-        console.warn(`⚠ FCM error:`, e.message);
-      }
+      console.warn(`⚠ FCM error [${e.code}]:`, e.message);
     }
   }
 }
 
 // ── Main check ──
-async function checkAndNotify() {
+async function checkAndNotify(forceTest = false) {
   const now = new Date();
   const nowMins = now.getHours() * 60 + now.getMinutes();
   const todayStr = today();
 
   try {
     const usersSnap = await db.collection('users').get();
+    console.log(`👥 Checking ${usersSnap.size} users`);
+
     for (const userDoc of usersSnap.docs) {
       const uid = userDoc.id;
+
+      // Get data
       const dataSnap = await db.doc(`users/${uid}/data/tracker`).get();
-      if (!dataSnap.exists) continue;
+      if (!dataSnap.exists) { console.log(`  User ${uid}: no data`); continue; }
       const data = dataSnap.data();
-      const tasks  = data.tasks   || [];
-      const habits = data.habits  || [];
-      if (!data.notifEnabled) continue;
+      if (!data.notifEnabled && !forceTest) { console.log(`  User ${uid}: notifications disabled`); continue; }
 
       // Get FCM tokens
       const tokensSnap = await db.collection(`users/${uid}/fcmTokens`).get();
-      if (tokensSnap.empty) continue;
-      const tokens = tokensSnap.docs.map(d => d.id);
+      if (tokensSnap.empty) { console.log(`  User ${uid}: no FCM tokens`); continue; }
+      const tokens = tokensSnap.docs.map(d => d.data().token || d.id);
+      console.log(`  User ${uid}: ${tokens.length} token(s), checking tasks...`);
+
+      const tasks  = data.tasks  || [];
+      const habits = data.habits || [];
+
+      // ── Test mode: send a test notification ──
+      if (forceTest) {
+        await sendToUser(tokens, '🧪 Test Notification', 'FCM is working! Your notifications are set up correctly.', 'test');
+        continue;
+      }
 
       // ── Per-task precise notifications ──
       for (const task of tasks) {
