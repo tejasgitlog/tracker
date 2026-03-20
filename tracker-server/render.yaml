@@ -1,0 +1,9 @@
+services:
+  - type: worker
+    name: daily-tracker-notif
+    runtime: node
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: FIREBASE_SERVICE_ACCOUNT
+        sync: false

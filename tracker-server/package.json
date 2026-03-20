@@ -1,0 +1,13 @@
+{
+  "name": "daily-tracker-notif-server",
+  "version": "1.0.0",
+  "description": "FCM notification server for Daily Tracker",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "firebase-admin": "^12.0.0",
+    "node-cron": "^3.0.3"
+  }
+}
