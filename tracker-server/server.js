@@ -17,17 +17,39 @@ const serviceAccount = {
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
   projectId: 'daily-tracker-6319c',
-  databaseURL: 'https://daily-tracker-6319c-default-rtdb.firebaseio.com'
 });
-const db  = admin.firestore();
-db.settings({ ignoreUndefinedProperties: true });
+const db = admin.firestore();
+db.settings({ 
+  ignoreUndefinedProperties: true,
+  host: 'firestore.googleapis.com',
+  ssl: true
+});
 const msg = admin.messaging();
 console.log('✅ Firebase initialized for project: daily-tracker-6319c');
 
-// Quick connectivity test
-db.collection('users').limit(1).get()
-  .then(s => console.log(`🔍 Firestore test: found ${s.size} user(s) in first check`))
-  .catch(e => console.error('🔥 Firestore connection error:', e.code, e.message));
+// Debug with known user ID from Firestore
+async function debugFirestore() {
+  try {
+    console.log('🔍 Testing Firestore...');
+    // Direct access to known user
+    const knownUID = 'LlAT3yCuKkhWYQBVcZ2MZr3OUAA3';
+    const directDoc = await db.doc(`users/${knownUID}/data/tracker`).get();
+    console.log('📄 Direct doc exists:', directDoc.exists);
+    if(directDoc.exists) {
+      const d = directDoc.data();
+      console.log('✅ Tasks count:', (d.tasks||[]).length);
+      console.log('✅ notifEnabled:', d.notifEnabled);
+    }
+    // Also try listing users
+    const cols = await db.listCollections();
+    console.log('📁 Top collections:', cols.map(c=>c.id));
+    const users = await db.collection('users').get();
+    console.log('👥 Users found:', users.size);
+  } catch(e) {
+    console.error('🔥 Error:', e.code, e.message);
+  }
+}
+debugFirestore();
 
 // ── Helpers ──
 function today() { return new Date().toISOString().slice(0, 10); }
