@@ -57,13 +57,19 @@ function fmt(ds) {
   return due.toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',timeZone:'Asia/Kolkata'}); 
 }
 
-// ── Duplicate prevention ──
-const sent = new Set();
-function canSend(key) {
-  if(sent.has(key)) return false;
-  sent.add(key);
-  setTimeout(()=>sent.delete(key), 2*60*60*1000);
-  return true;
+// ── Duplicate prevention using Firestore (survives restarts) ──
+async function canSend(key) {
+  try {
+    const ref = db.doc(`notifSent/${key.replace(/[^a-zA-Z0-9]/g,'-')}`);
+    const doc = await ref.get();
+    if(doc.exists) return false;
+    await ref.set({ sentAt: new Date().toISOString() });
+    // Auto-delete after 2 hours
+    setTimeout(async()=>{ try{ await ref.delete(); }catch(e){} }, 2*60*60*1000);
+    return true;
+  } catch(e) {
+    return true; // allow if Firestore check fails
+  }
 }
 
 // ── Send FCM ──
@@ -132,16 +138,16 @@ async function checkAndNotify(forceTest=false) {
         if(mins===null) continue;
         console.log(`  Task "${task.name}": dueDateTime=${task.dueDateTime} mins=${mins}`);
 
-        // 30 min warning — tight window (28-32 mins), fires once
-        if(mins>=28&&mins<=32&&canSend(`w30-${task.id}-${todayStr}`))
+        // 30 min warning — fires once (window 29-31)
+        if(mins>=29&&mins<=31&&await canSend(`w30-${task.id}-${todayStr}`))
           await sendToUser(tokens,'Due in 30 minutes ⏰',`"${task.name}" is due at ${fmt(task.dueDateTime)}`,`w30-${task.id}`);
 
-        // Due now — tight window (0 to -3 mins), fires once per hour
-        if(mins>=-3&&mins<=0&&canSend(`due-${task.id}-${todayStr}-${istNow.getUTCHours()}`))
+        // Due now — fires once (window 0 to -1)
+        if(mins>=-1&&mins<=0&&await canSend(`due-${task.id}-${todayStr}`))
           await sendToUser(tokens,'Task due now! 🚨',`"${task.name}" — time is up! Mark it done.`,`due-${task.id}`);
 
-        // 1hr overdue — tight window (-58 to -62 mins), fires once
-        if(mins>=-62&&mins<=-58&&canSend(`ov-${task.id}-${todayStr}`))
+        // 1hr overdue — fires once (window -59 to -61)
+        if(mins>=-61&&mins<=-59&&await canSend(`ov-${task.id}-${todayStr}`))
           await sendToUser(tokens,'Still overdue! ⚠️',`"${task.name}" was due at ${fmt(task.dueDateTime)}.`,`ov-${task.id}`);
       }
 
