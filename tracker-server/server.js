@@ -31,20 +31,21 @@ console.log('✅ Firebase initialized for project: daily-tracker-6319c');
 async function debugFirestore() {
   try {
     console.log('🔍 Testing Firestore...');
-    // Direct access to known user
-    const knownUID = 'LlAT3yCuKkhWYQBVcZ2MZr3OUAA3';
+    const knownUID = 'lRb3wB6dz2PjJ4gxoGmpxxsmSQ62';
     const directDoc = await db.doc(`users/${knownUID}/data/tracker`).get();
     console.log('📄 Direct doc exists:', directDoc.exists);
     if(directDoc.exists) {
       const d = directDoc.data();
       console.log('✅ Tasks count:', (d.tasks||[]).length);
       console.log('✅ notifEnabled:', d.notifEnabled);
+      // Check FCM tokens
+      const tokens = await db.collection(`users/${knownUID}/fcmTokens`).get();
+      console.log('✅ FCM tokens:', tokens.size);
+      tokens.forEach(t => console.log('  Token:', t.id.slice(-8)));
     }
-    // Also try listing users
-    const cols = await db.listCollections();
-    console.log('📁 Top collections:', cols.map(c=>c.id));
     const users = await db.collection('users').get();
-    console.log('👥 Users found:', users.size);
+    console.log('👥 Total users in collection:', users.size);
+    users.forEach(u => console.log('  UID:', u.id));
   } catch(e) {
     console.error('🔥 Error:', e.code, e.message);
   }
@@ -108,8 +109,13 @@ async function checkAndNotify(forceTest = false) {
     const usersSnap = await db.collection('users').get();
     console.log(`👥 Found ${usersSnap.size} users`);
 
-    for (const userDoc of usersSnap.docs) {
-      const uid = userDoc.id;
+    // Fallback: directly use known UID if collection scan returns 0
+    const uids = usersSnap.size > 0
+      ? usersSnap.docs.map(d => d.id)
+      : ['lRb3wB6dz2PjJ4gxoGmpxxsmSQ62'];
+    console.log('Processing UIDs:', uids);
+
+    for (const uid of uids) {
       const dataSnap = await db.doc(`users/${uid}/data/tracker`).get();
       if (!dataSnap.exists) continue;
       const data = dataSnap.data();
