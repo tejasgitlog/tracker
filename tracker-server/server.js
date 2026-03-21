@@ -16,11 +16,18 @@ const serviceAccount = {
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
-  projectId: 'daily-tracker-6319c'
+  projectId: 'daily-tracker-6319c',
+  databaseURL: 'https://daily-tracker-6319c-default-rtdb.firebaseio.com'
 });
 const db  = admin.firestore();
+db.settings({ ignoreUndefinedProperties: true });
 const msg = admin.messaging();
 console.log('✅ Firebase initialized for project: daily-tracker-6319c');
+
+// Quick connectivity test
+db.collection('users').limit(1).get()
+  .then(s => console.log(`🔍 Firestore test: found ${s.size} user(s) in first check`))
+  .catch(e => console.error('🔥 Firestore connection error:', e.code, e.message));
 
 // ── Helpers ──
 function today() { return new Date().toISOString().slice(0, 10); }
