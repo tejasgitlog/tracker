@@ -24,16 +24,38 @@ const msg = admin.messaging();
 console.log('✅ Server started — daily-tracker-6319c');
 
 // ── Helpers ──
-function today() { return new Date().toISOString().slice(0,10); }
+function today() { 
+  // Use IST date
+  const now = new Date();
+  const ist = new Date(now.getTime() + (5.5*60*60*1000));
+  return ist.toISOString().slice(0,10); 
+}
 function minsUntil(ds) {
   if(!ds) return null;
-  return Math.floor((new Date(ds.includes('T')?ds:ds+'T23:59:00') - new Date()) / 60000);
+  // dueDateTime is stored as local time without timezone (e.g. "2026-03-21T10:00")
+  // Treat it as IST by adding +05:30 offset
+  const dateStr = ds.includes('T') ? ds : ds+'T23:59:00';
+  // If no timezone info, assume IST (UTC+5:30)
+  const due = dateStr.includes('Z') || dateStr.includes('+') 
+    ? new Date(dateStr)
+    : new Date(dateStr + '+05:30');
+  return Math.floor((due - new Date()) / 60000);
 }
 function daysUntil(ds) {
   if(!ds) return null;
-  return Math.floor((new Date(ds.includes('T')?ds:ds+'T23:59:00') - new Date()) / 86400000);
+  const dateStr = ds.includes('T') ? ds : ds+'T23:59:00';
+  const due = dateStr.includes('Z') || dateStr.includes('+')
+    ? new Date(dateStr)
+    : new Date(dateStr + '+05:30');
+  return Math.floor((due - new Date()) / 86400000);
 }
-function fmt(ds) { return new Date(ds).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}); }
+function fmt(ds) { 
+  const dateStr = ds.includes('T') ? ds : ds+'T00:00:00';
+  const due = dateStr.includes('Z') || dateStr.includes('+')
+    ? new Date(dateStr)
+    : new Date(dateStr + '+05:30');
+  return due.toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',timeZone:'Asia/Kolkata'}); 
+}
 
 // ── Duplicate prevention ──
 const sent = new Set();
@@ -69,7 +91,9 @@ async function sendToUser(tokens, title, body, tag) {
 // ── Main check ──
 async function checkAndNotify(forceTest=false) {
   const now      = new Date();
-  const nowMins  = now.getHours()*60 + now.getMinutes();
+  // Convert to IST for time comparisons
+  const istNow   = new Date(now.getTime() + (5.5*60*60*1000));
+  const nowMins  = istNow.getUTCHours()*60 + istNow.getUTCMinutes();
   const todayStr = today();
 
   try {
@@ -106,6 +130,7 @@ async function checkAndNotify(forceTest=false) {
         if(task.done || !task.dueDateTime) continue;
         const mins = minsUntil(task.dueDateTime);
         if(mins===null) continue;
+        console.log(`  Task "${task.name}": dueDateTime=${task.dueDateTime} mins=${mins}`);
 
         // 30 min warning (window 25-35)
         if(mins>=25&&mins<=35&&canSend(`w30-${task.id}-${todayStr}`))
