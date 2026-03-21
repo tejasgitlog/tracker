@@ -1,8 +1,8 @@
 const admin = require('firebase-admin');
 const cron  = require('node-cron');
 const http  = require('http');
+const https = require('https');
 
-// ── Hardcoded credentials (avoids env variable parsing issues) ──
 const serviceAccount = {
   type: "service_account",
   project_id: "daily-tracker-6319c",
@@ -14,201 +14,175 @@ const serviceAccount = {
   token_uri: "https://oauth2.googleapis.com/token"
 };
 
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-  projectId: 'daily-tracker-6319c',
-});
-const db = admin.firestore();
-db.settings({ 
-  ignoreUndefinedProperties: true,
-  host: 'firestore.googleapis.com',
-  ssl: true
-});
-const msg = admin.messaging();
-console.log('✅ Firebase initialized for project: daily-tracker-6319c');
+// Known users — add more UIDs here as needed
+const KNOWN_USERS = ['lRb3wB6dz2PjJ4gxoGmpxxsmSQ62'];
 
-// Debug with known user ID from Firestore
-async function debugFirestore() {
-  try {
-    console.log('🔍 Testing Firestore...');
-    const knownUID = 'lRb3wB6dz2PjJ4gxoGmpxxsmSQ62';
-    const directDoc = await db.doc(`users/${knownUID}/data/tracker`).get();
-    console.log('📄 Direct doc exists:', directDoc.exists);
-    if(directDoc.exists) {
-      const d = directDoc.data();
-      console.log('✅ Tasks count:', (d.tasks||[]).length);
-      console.log('✅ notifEnabled:', d.notifEnabled);
-      // Check FCM tokens
-      const tokens = await db.collection(`users/${knownUID}/fcmTokens`).get();
-      console.log('✅ FCM tokens:', tokens.size);
-      tokens.forEach(t => console.log('  Token:', t.id.slice(-8)));
-    }
-    const users = await db.collection('users').get();
-    console.log('👥 Total users in collection:', users.size);
-    users.forEach(u => console.log('  UID:', u.id));
-  } catch(e) {
-    console.error('🔥 Error:', e.code, e.message);
-  }
-}
-debugFirestore();
+admin.initializeApp({ credential: admin.credential.cert(serviceAccount), projectId: 'daily-tracker-6319c' });
+const db  = admin.firestore();
+db.settings({ ignoreUndefinedProperties: true });
+const msg = admin.messaging();
+console.log('✅ Server started — daily-tracker-6319c');
 
 // ── Helpers ──
-function today() { return new Date().toISOString().slice(0, 10); }
+function today() { return new Date().toISOString().slice(0,10); }
 function minsUntil(ds) {
-  if (!ds) return null;
-  return Math.floor((new Date(ds.includes('T') ? ds : ds + 'T23:59:00') - new Date()) / 60000);
+  if(!ds) return null;
+  return Math.floor((new Date(ds.includes('T')?ds:ds+'T23:59:00') - new Date()) / 60000);
 }
 function daysUntil(ds) {
-  if (!ds) return null;
-  return Math.floor((new Date(ds.includes('T') ? ds : ds + 'T23:59:00') - new Date()) / 86400000);
+  if(!ds) return null;
+  return Math.floor((new Date(ds.includes('T')?ds:ds+'T23:59:00') - new Date()) / 86400000);
 }
-function fmt(ds) {
-  return new Date(ds).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-}
+function fmt(ds) { return new Date(ds).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}); }
 
-// ── Track sent notifications to avoid duplicates ──
-const sentNotifs = new Set();
-function alreadySent(key) {
-  if (sentNotifs.has(key)) return true;
-  sentNotifs.add(key);
-  // Clear after 2 hours to prevent memory leak
-  setTimeout(() => sentNotifs.delete(key), 2 * 60 * 60 * 1000);
-  return false;
+// ── Duplicate prevention ──
+const sent = new Set();
+function canSend(key) {
+  if(sent.has(key)) return false;
+  sent.add(key);
+  setTimeout(()=>sent.delete(key), 2*60*60*1000);
+  return true;
 }
 
 // ── Send FCM ──
 async function sendToUser(tokens, title, body, tag) {
-  for (const token of tokens) {
+  for(const token of tokens) {
     try {
       await msg.send({
         token,
         notification: { title, body },
         webpush: {
-          notification: {
-            title, body,
+          notification: { title, body,
             icon: 'https://mellow-dodol-c4c062.netlify.app/favicon.ico',
-            tag, renotify: true, vibrate: [200, 100, 200]
+            tag, renotify: true, vibrate: [200,100,200]
           },
           fcmOptions: { link: 'https://mellow-dodol-c4c062.netlify.app/' }
         }
       });
       console.log(`📨 "${title}" → ...${token.slice(-8)}`);
-    } catch (e) {
+    } catch(e) {
       console.error(`❌ FCM [${e.code}]: ${e.message}`);
     }
   }
 }
 
 // ── Main check ──
-async function checkAndNotify(forceTest = false) {
+async function checkAndNotify(forceTest=false) {
   const now      = new Date();
-  const nowMins  = now.getHours() * 60 + now.getMinutes();
+  const nowMins  = now.getHours()*60 + now.getMinutes();
   const todayStr = today();
 
   try {
-    const usersSnap = await db.collection('users').get();
-    console.log(`👥 Found ${usersSnap.size} users`);
+    // Try collection scan first, fall back to known UIDs
+    let uids = [...KNOWN_USERS];
+    try {
+      const snap = await db.collection('users').get();
+      if(snap.size > 0) uids = snap.docs.map(d=>d.id);
+    } catch(e) {}
+    console.log(`👥 Processing ${uids.length} user(s)`);
 
-    // Fallback: directly use known UID if collection scan returns 0
-    const uids = usersSnap.size > 0
-      ? usersSnap.docs.map(d => d.id)
-      : ['lRb3wB6dz2PjJ4gxoGmpxxsmSQ62'];
-    console.log('Processing UIDs:', uids);
-
-    for (const uid of uids) {
+    for(const uid of uids) {
       const dataSnap = await db.doc(`users/${uid}/data/tracker`).get();
-      if (!dataSnap.exists) continue;
+      if(!dataSnap.exists) { console.log(`  ${uid}: no data`); continue; }
       const data = dataSnap.data();
-      if (!data.notifEnabled && !forceTest) { console.log(`  ${uid}: notifications disabled`); continue; }
+      if(!data.notifEnabled && !forceTest) { console.log(`  ${uid}: notif disabled`); continue; }
 
       const tokensSnap = await db.collection(`users/${uid}/fcmTokens`).get();
-      if (tokensSnap.empty) { console.log(`  ${uid}: no FCM tokens`); continue; }
-      const tokens = tokensSnap.docs.map(d => d.data().token || d.id);
+      if(tokensSnap.empty) { console.log(`  ${uid}: no tokens`); continue; }
+      const tokens = tokensSnap.docs.map(d=>d.data().token||d.id);
       console.log(`  ${uid}: ${tokens.length} token(s)`);
 
       const tasks  = data.tasks  || [];
       const habits = data.habits || [];
 
-      // ── Test mode ──
-      if (forceTest) {
-        await sendToUser(tokens, '🧪 Test!', 'FCM working! Server → device confirmed ✅', 'test');
+      // Test mode
+      if(forceTest) {
+        await sendToUser(tokens,'🧪 Test','FCM working! Tab closed notifications confirmed ✅','test');
         continue;
       }
 
-      // ── Per-task notifications (wider window handles Render sleep) ──
-      for (const task of tasks) {
-        if (task.done || !task.dueDateTime) continue;
+      // ── Per-task notifications ──
+      for(const task of tasks) {
+        if(task.done || !task.dueDateTime) continue;
         const mins = minsUntil(task.dueDateTime);
-        if (mins === null) continue;
+        if(mins===null) continue;
 
-        // 30 min warning — window: 25-35 mins
-        if (mins >= 25 && mins <= 35 && !alreadySent(`w30-${task.id}-${todayStr}`))
-          await sendToUser(tokens, 'Due in 30 minutes ⏰', `"${task.name}" is due at ${fmt(task.dueDateTime)}`, `w30-${task.id}`);
+        // 30 min warning (window 25-35)
+        if(mins>=25&&mins<=35&&canSend(`w30-${task.id}-${todayStr}`))
+          await sendToUser(tokens,'Due in 30 minutes ⏰',`"${task.name}" is due at ${fmt(task.dueDateTime)}`,`w30-${task.id}`);
 
-        // Due now — window: 0 to -15 mins (catches late wakeup)
-        if (mins >= -15 && mins <= 0 && !alreadySent(`due-${task.id}-${todayStr}`))
-          await sendToUser(tokens, 'Task due now! 🚨', `"${task.name}" — time is up! Mark it done.`, `due-${task.id}`);
+        // Due now (window 0 to -15)
+        if(mins>=-15&&mins<=0&&canSend(`due-${task.id}-${todayStr}`))
+          await sendToUser(tokens,'Task due now! 🚨',`"${task.name}" — time is up! Mark it done.`,`due-${task.id}`);
 
-        // 1 hour overdue — window: -55 to -75 mins
-        if (mins >= -75 && mins <= -55 && !alreadySent(`ov-${task.id}-${todayStr}`))
-          await sendToUser(tokens, 'Still overdue! ⚠️', `"${task.name}" was due at ${fmt(task.dueDateTime)}.`, `ov-${task.id}`);
+        // 1hr overdue (window -55 to -75)
+        if(mins>=-75&&mins<=-55&&canSend(`ov-${task.id}-${todayStr}`))
+          await sendToUser(tokens,'Still overdue! ⚠️',`"${task.name}" was due at ${fmt(task.dueDateTime)}.`,`ov-${task.id}`);
       }
 
-      // ── Daily 8am (window: 8:00-8:14) ──
-      if (nowMins >= 480 && nowMins <= 494 && !alreadySent(`morning-${uid}-${todayStr}`)) {
-        const pending  = tasks.filter(t => !t.done).length;
-        const dueToday = tasks.filter(t => !t.done && t.dueDate === todayStr).length;
-        if (dueToday > 0 || pending > 0)
-          await sendToUser(tokens, 'Good morning! ☀️',
-            dueToday > 0 ? `${dueToday} task${dueToday>1?'s':''} due today!` : `${pending} pending task${pending>1?'s':''}. Start strong!`,
+      // ── Daily 8am (window 8:00-8:14) ──
+      if(nowMins>=480&&nowMins<=494&&canSend(`morning-${uid}-${todayStr}`)) {
+        const pending  = tasks.filter(t=>!t.done).length;
+        const dueToday = tasks.filter(t=>!t.done&&t.dueDate===todayStr).length;
+        if(dueToday>0||pending>0)
+          await sendToUser(tokens,'Good morning! ☀️',
+            dueToday>0?`${dueToday} task${dueToday>1?'s':''} due today!`:`${pending} pending task${pending>1?'s':''}. Start strong!`,
             'daily-morning');
       }
 
-      // ── Daily 7pm (window: 19:00-19:14) ──
-      if (nowMins >= 1140 && nowMins <= 1154 && !alreadySent(`evening-${uid}-${todayStr}`)) {
-        const overdue = tasks.filter(t => !t.done && (t.dueDateTime||t.dueDate) && minsUntil(t.dueDateTime||t.dueDate) < 0);
-        const dueTmr  = tasks.filter(t => !t.done && t.dueDate && daysUntil(t.dueDate) === 1);
-        if (overdue.length > 0)
-          await sendToUser(tokens, 'Overdue tasks! 📋', `${overdue.slice(0,2).map(t=>t.name).join(', ')} overdue.`, 'daily-overdue');
-        else if (dueTmr.length > 0)
-          await sendToUser(tokens, 'Due tomorrow ⏰', `${dueTmr.slice(0,2).map(t=>t.name).join(', ')} due tomorrow.`, 'daily-tomorrow');
+      // ── Daily 7pm (window 19:00-19:14) ──
+      if(nowMins>=1140&&nowMins<=1154&&canSend(`evening-${uid}-${todayStr}`)) {
+        const overdue = tasks.filter(t=>!t.done&&(t.dueDateTime||t.dueDate)&&minsUntil(t.dueDateTime||t.dueDate)<0);
+        const dueTmr  = tasks.filter(t=>!t.done&&t.dueDate&&daysUntil(t.dueDate)===1);
+        if(overdue.length>0)
+          await sendToUser(tokens,'Overdue tasks! 📋',`${overdue.slice(0,2).map(t=>t.name).join(', ')} overdue.`,'daily-overdue');
+        else if(dueTmr.length>0)
+          await sendToUser(tokens,'Due tomorrow ⏰',`${dueTmr.slice(0,2).map(t=>t.name).join(', ')} due tomorrow.`,'daily-tomorrow');
       }
 
-      // ── Daily 9pm (window: 21:00-21:14) ──
-      if (nowMins >= 1260 && nowMins <= 1274 && !alreadySent(`night-${uid}-${todayStr}`)) {
-        const allHabits   = habits.length > 0 && habits.every(h => h.log && h.log[todayStr]);
-        const anyActivity = tasks.some(t => t.done && t.created === todayStr) || habits.some(h => h.log && h.log[todayStr]);
-        if (allHabits)
-          await sendToUser(tokens, 'All habits done! 🔥', 'Amazing work today!', 'daily-evening');
-        else if (!anyActivity)
-          await sendToUser(tokens, 'Daily check-in 🌙', "Don't forget to log today's activities!", 'daily-checkin');
+      // ── Daily 9pm (window 21:00-21:14) ──
+      if(nowMins>=1260&&nowMins<=1274&&canSend(`night-${uid}-${todayStr}`)) {
+        const allHabits   = habits.length>0&&habits.every(h=>h.log&&h.log[todayStr]);
+        const anyActivity = tasks.some(t=>t.done&&t.created===todayStr)||habits.some(h=>h.log&&h.log[todayStr]);
+        if(allHabits)
+          await sendToUser(tokens,'All habits done! 🔥','Amazing work today!','daily-evening');
+        else if(!anyActivity)
+          await sendToUser(tokens,'Daily check-in 🌙',"Don't forget to log today's activities!",'daily-checkin');
       }
 
-      // ── Sunday 8pm weekly (window: 20:00-20:14) ──
-      if (now.getDay() === 0 && nowMins >= 1200 && nowMins <= 1214 && !alreadySent(`weekly-${uid}-${todayStr}`)) {
-        const ws = (() => { const d=new Date(); d.setDate(d.getDate()-d.getDay()); return d.toISOString().slice(0,10); })();
-        const weekDone = tasks.filter(t => t.done && t.created >= ws).length;
-        await sendToUser(tokens, 'Weekly Report 📊', `This week: ${weekDone} tasks done. Great work!`, 'weekly-report');
+      // ── Sunday 8pm weekly (window 20:00-20:14) ──
+      if(now.getDay()===0&&nowMins>=1200&&nowMins<=1214&&canSend(`weekly-${uid}-${todayStr}`)) {
+        const ws=(()=>{const d=new Date();d.setDate(d.getDate()-d.getDay());return d.toISOString().slice(0,10);})();
+        const done=tasks.filter(t=>t.done&&t.created>=ws).length;
+        await sendToUser(tokens,'Weekly Report 📊',`This week: ${done} tasks done. Great work!`,'weekly-report');
       }
     }
-  } catch (e) {
+  } catch(e) {
     console.error('❌ Error:', e.message);
   }
 }
 
 // ── HTTP server ──
-const PORT = process.env.PORT || 3000;
-http.createServer(async (req, res) => {
-  if (req.url === '/test') {
+const PORT = process.env.PORT||3000;
+const SERVER_URL = 'https://tracker-u4h8.onrender.com';
+http.createServer(async(req,res)=>{
+  if(req.url==='/test'){
     console.log('🧪 Test triggered');
     await checkAndNotify(true);
-    res.writeHead(200); res.end('Test sent! Check logs and device.'); return;
+    res.writeHead(200);res.end('Test sent! Check device.');return;
   }
-  res.writeHead(200); res.end('Daily Tracker Notification Server ✅');
-}).listen(PORT, () => console.log(`🌐 Running on port ${PORT}`));
+  res.writeHead(200);res.end('Daily Tracker Notification Server ✅');
+}).listen(PORT,()=>console.log(`🌐 Running on port ${PORT}`));
 
-// ── Every minute ──
-cron.schedule('* * * * *', () => {
+// ── Self-ping every 14 mins to prevent Render sleep ──
+setInterval(()=>{
+  https.get(SERVER_URL,(res)=>{
+    console.log(`🏓 Self-ping OK (${res.statusCode})`);
+  }).on('error',e=>console.log('🏓 Self-ping failed:',e.message));
+}, 14*60*1000);
+
+// ── Run every minute ──
+cron.schedule('* * * * *',()=>{
   console.log(`⏰ ${new Date().toLocaleTimeString()}`);
   checkAndNotify();
 });
