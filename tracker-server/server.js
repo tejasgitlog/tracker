@@ -3,27 +3,30 @@ const cron  = require('node-cron');
 const http  = require('http');
 const https = require('https');
 
-// ── Firebase credentials ──
-const serviceAccount = {
-  type: "service_account",
-  project_id: "daily-tracker-6319c",
-  private_key_id: "8cd7460f98be14a710949272c25c361a8d41516b",
-  private_key: "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC0CFteRnwnht/a\n25K8oL2OlC/4EgTsPLw44QuyU1kxzMWqn57JOGCqRB7y203t2aRHRjExqyKmUmlD\nzgyIVSGmoxLLZB5p5GqH2gZc+VZ3xjQoG9QbOqudMwqqdo7AXny94x3H+k819fhA\nNVVxMA7pe8zgFYYPQhYRI+oAhwalgCKzpHkaywCDy0fLWC8/x8jTyiXkJn4UyjQa\nXaDEeC9++plXfAMZhSUVUx6YwOEce7KMLavZT33OWZcASCR3Ey0CU1+XNZicPt5l\nB4L5ESxu2Ed9WK2l2lSkBifr5pKUG+zThcMCSAD1JomfgAhlK8uj/qz6nrjsUXCG\n1QyFtZcPAgMBAAECggEAPoUUbcXegb+F57QO3jCYA3aUvfpL+VoSJ1KHxFLLi87H\n6jvqYYiRkS986+uawXmuYg4PMWdz7fx6j9Bza7jcqcjB0x4erblkAW+GfC0eiROs\nsy0O2LHkPQAnuRDY/BcUDMFda0AS1/NmVa3v0RHWa+DRQhRXbN8PWL53Gd3KQhiL\nCa9enLtfcj0ISGfvs0gkHvwaXPnDiKqBlvJPEJOde1oEXCeGJIh8P+heEJmUA/J7\ncvT0ee93Kzylh9lr1yYMy0XMy0Aampl0qgHLn3ZULTYQCSMoSnbDf9rvGQ3spwGv\n7E5t+4u3ctPQbKDyNvqWLlt/j8D33AQMnkjliKKJqQKBgQDk+uXTxEjkifdYaZ17\n/FAmg2IJYtJ+Hh/ORgxHqq77hwsu268jRajEnxs4tzGpGz8uXAEeUckDA3WtRMX3\nkfrLIzYXsmU/7xDmVklOc4m1Fl/Q50VxrIFZWOsHlCMEK+WEw1tRdIQ+HFuNekMg\nHawtDoH0mHucSPbGxpsKlu/T/QKBgQDJRtcBnij5y/OxxRgjfyFMf9l3wCA9nzLK\nsBDOIRnXZTfTEX5ypqWZnCbkDyn/6jd+wvWzhwIv8D96DcSQ+dDa42pxgw5ZQOQ7\nwYHLcsdfMH3NqxW0PrzbDH45cBrebaFg66k+DE+5R5jQkIgAsz+JPx14d7pZfdeU\nXTaZ8o0W+wKBgQCv4TPVREiFGqAdjgpEKNrbqkEMWpa5/qOJim52QdlkJCdn16Af\n5KqsVFXRa40+ikoubscBJerTYL3r2A6DieJsU+CBtSpmQFfnxNFL7B0TNltkl6/U\nj59PJKhqytNWqe0C3BdxaqEFID0GX6ndqk0M0r7pRJJ1yembZwPBz4vpdQKBgHXH\nvF03/eZe0JXALeXnqMapMcp/ZN5qYEB3Uv4sJIEEu+wJGqNgnRsMYz2lGgClQCAv\nWbPaVw9SWPLFR7dGWE8eMNWHyUe1T1kgXSF+Yuhy6csGSEcXR1AvOVXHIhHyuTKL\n9JdYgPZ8zRGO4eb2/UEE6+vos+VWXGZ3PVJMuv8tAoGBAM9DUGZnL0qF38XebtUb\nW4TPIuvMtlpkoleaukoaGQrzDL0J1nDBsYT8qVbrTtW67p/xrEwgta9l8enVjeBd\ngTWLXXvHT4Ly8ZY+I/tIShcU6Zv0k7L36oDGpH11ZMzbwf0687OuVfTBRrvzxmRK\nXrb56gU59BTN/1efhEpik462\n-----END PRIVATE KEY-----\n",
-  client_email: "firebase-adminsdk-fbsvc@daily-tracker-6319c.iam.gserviceaccount.com",
-  client_id: "114694382540795028267",
-  auth_uri: "https://accounts.google.com/o/oauth2/auth",
-  token_uri: "https://oauth2.googleapis.com/token"
-};
+// ── Secure credentials from environment variable (base64 encoded) ──
+let serviceAccount;
+try {
+  const b64 = process.env.FIREBASE_SERVICE_ACCOUNT_B64;
+  if (!b64) throw new Error('FIREBASE_SERVICE_ACCOUNT_B64 not set');
+  serviceAccount = JSON.parse(Buffer.from(b64, 'base64').toString('utf8'));
+  console.log('✅ Credentials loaded for project:', serviceAccount.project_id);
+} catch(e) {
+  console.error('❌ Failed to load credentials:', e.message);
+  process.exit(1);
+}
 
-// ── Known users (fallback when collection scan fails) ──
+// ── Known users (fallback when Firestore collection scan fails) ──
 const KNOWN_USERS = ['lRb3wB6dz2PjJ4gxoGmpxxsmSQ62'];
 
 // ── Firebase init ──
-admin.initializeApp({ credential: admin.credential.cert(serviceAccount), projectId: 'daily-tracker-6319c' });
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+  projectId: serviceAccount.project_id
+});
 const db  = admin.firestore();
 db.settings({ ignoreUndefinedProperties: true });
 const msg = admin.messaging();
-console.log('✅ Daily Tracker server started');
+console.log('✅ Daily Tracker notification server started');
 
 // ── Helpers ──
 function today() {
@@ -90,13 +93,12 @@ async function sendToUser(tokens, title, body, tag) {
 
 // ── Main notification check ──
 async function checkAndNotify(forceTest=false) {
-  const now      = new Date();
   const ist      = istNow();
   const nowMins  = ist.getUTCHours()*60 + ist.getUTCMinutes();
   const todayStr = today();
 
   try {
-    // Try collection scan, fall back to known UIDs
+    // Try collection scan first, fall back to known UIDs
     let uids = [...KNOWN_USERS];
     try {
       const snap = await db.collection('users').get();
@@ -118,7 +120,7 @@ async function checkAndNotify(forceTest=false) {
 
       // ── Test mode ──
       if(forceTest) {
-        await sendToUser(tokens,'🧪 Test','FCM working! Tab closed notifications confirmed ✅','test');
+        await sendToUser(tokens,'🧪 Test','FCM working! Notifications confirmed ✅','test');
         continue;
       }
 
@@ -182,14 +184,14 @@ async function checkAndNotify(forceTest=false) {
 
 // ── HTTP server ──
 const PORT = process.env.PORT||3000;
-const SERVER_URL = 'https://tracker-u4h8.onrender.com';
+const SERVER_URL = process.env.RENDER_EXTERNAL_URL || 'https://tracker-u4h8.onrender.com';
 
 http.createServer(async(req,res)=>{
   if(req.url==='/test') {
     await checkAndNotify(true);
     res.writeHead(200); res.end('Test sent! Check your device.'); return;
   }
-  res.writeHead(200); res.end('Daily Tracker Notification Server ✅ running');
+  res.writeHead(200); res.end('Daily Tracker Notification Server ✅');
 }).listen(PORT, ()=>console.log(`🌐 Running on port ${PORT}`));
 
 // ── Self-ping every 14 mins to prevent Render sleep ──
