@@ -132,16 +132,16 @@ async function checkAndNotify(forceTest=false) {
         if(mins===null) continue;
         console.log(`  Task "${task.name}": dueDateTime=${task.dueDateTime} mins=${mins}`);
 
-        // 30 min warning (window 25-35)
-        if(mins>=25&&mins<=35&&canSend(`w30-${task.id}-${todayStr}`))
+        // 30 min warning — tight window (28-32 mins), fires once
+        if(mins>=28&&mins<=32&&canSend(`w30-${task.id}-${todayStr}`))
           await sendToUser(tokens,'Due in 30 minutes ⏰',`"${task.name}" is due at ${fmt(task.dueDateTime)}`,`w30-${task.id}`);
 
-        // Due now (window 0 to -15)
-        if(mins>=-15&&mins<=0&&canSend(`due-${task.id}-${todayStr}`))
+        // Due now — tight window (0 to -3 mins), fires once per hour
+        if(mins>=-3&&mins<=0&&canSend(`due-${task.id}-${todayStr}-${istNow.getUTCHours()}`))
           await sendToUser(tokens,'Task due now! 🚨',`"${task.name}" — time is up! Mark it done.`,`due-${task.id}`);
 
-        // 1hr overdue (window -55 to -75)
-        if(mins>=-75&&mins<=-55&&canSend(`ov-${task.id}-${todayStr}`))
+        // 1hr overdue — tight window (-58 to -62 mins), fires once
+        if(mins>=-62&&mins<=-58&&canSend(`ov-${task.id}-${todayStr}`))
           await sendToUser(tokens,'Still overdue! ⚠️',`"${task.name}" was due at ${fmt(task.dueDateTime)}.`,`ov-${task.id}`);
       }
 
